@@ -1,12 +1,3 @@
-
-install.packages("modeltime", dependencies = TRUE)
-library(modeltime)
-
-library(catboost)
-
-install.packages("forecastHybrid")
-library(forecastHybrid)
-## ---- include = FALSE---------------------------------------------------------
 knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>",
@@ -20,72 +11,61 @@ knitr::opts_chunk$set(
   warning = FALSE
 )
 
-## -----------------------------------------------------------------------------
-library(xgboost)
-library(tidymodels)
-library(modeltime)
+## Load Required Libraries
 library(tidyverse)
 library(lubridate)
-library(timetk)
-library(boostime)
+library(modeltime)
 library(bayesmodels)
+library(timetk)
+library(readxl)
+library(recipes)
+library(parsnip)
+library(rsample)
 
-# This toggles plots from plotly (interactive) to ggplot (static)
-interactive <- FALSE
+# Load Data
+paym <- read_excel("data/df.xlsx")
 
-## -----------------------------------------------------------------------------
-paym %>%
-  plot_time_series(date, value)
+# Plot Time Series
+paym %>% 
+  plot_time_series(date, value, .smooth = FALSE)
 
-## -----------------------------------------------------------------------------
-# Split Data 80/20
+# Split Data
 splits <- initial_time_split(paym, prop = 0.9)
 
-## ---- message=TRUE------------------------------------------------------------
-# Model 1: auto_arima ----
+# Model 1: auto_arima
 model_fit_arima_no_boost <- arima_reg() %>%
   set_engine(engine = "auto_arima") %>%
   fit(value ~ date, data = training(splits))
 
-## ---- message=TRUE------------------------------------------------------------
-# Model 2: arima_boost ----
+# Model 2: arima_boost 
 model_fit_arima_boosted <- arima_boost(
-  min_n = 2,
-  learn_rate = 0.015
-) %>%
+  min_n = 2, learn_rate = 0.015) %>%
   set_engine(engine = "auto_arima_xgboost") %>%
   fit(value ~ date + as.numeric(date) + factor(month(date, label = TRUE), ordered = F),
       data = training(splits))
 
-## ---- message=TRUE------------------------------------------------------------
-# Model 3: ets ----
+# Model 3: ets
 model_fit_ets <- exp_smoothing() %>%
   set_engine(engine = "ets") %>%
   fit(value ~ date, data = training(splits))
 
-## ---- message=TRUE------------------------------------------------------------
-# Model 4: prophet ----
+# Model 4: prophet 
 model_fit_prophet <- prophet_reg() %>%
   set_engine(engine = "prophet") %>%
   fit(value ~ date, data = training(splits))
 
-## ---- message=TRUE------------------------------------------------------------
-# Model 5: lm ----
+# Model 5: lm
 model_fit_lm <- linear_reg() %>%
   set_engine("lm") %>%
   fit(value ~ as.numeric(date) + factor(month(date, label = TRUE), ordered = FALSE),
       data = training(splits))
 
-## ---- message=TRUE------------------------------------------------------------
-# Model 6: earth ----
+# Model 6: earth
 model_spec_mars <- mars(mode = "regression") %>%
   set_engine("earth") 
 
-##..............................................................................
-#Model 1: ARIMA (Modeltime)
-#First, we create a basic univariate ARIMA model using “Arima” using arima_reg()
 
-# Model 1: arima ----
+#Model 7: ARIMA (Modeltime) #First, we create a basic univariate ARIMA model using "arima_reg()" from modeltime package
 model_fit_arima<- arima_reg(non_seasonal_ar = 0,
                             non_seasonal_differences = 1,
                             non_seasonal_ma = 1,
@@ -96,10 +76,8 @@ model_fit_arima<- arima_reg(non_seasonal_ar = 0,
   set_engine(engine = "arima") %>%
   fit(value ~ date, data = training(splits))
 
-#-------------------------------------------------------------------------------
-#Model 2: ARIMA (Bayesmodels)
-#Now, we create the same model but from a Bayesian perspective with the package bayesmodels:
- # Model 2: arima_boost ----
+
+#Model 8: ARIMA (Bayesmodels) #Now, we create the same model but from a Bayesian perspective with the package bayesmodels:
 model_fit_arima_bayes<- sarima_reg(non_seasonal_ar = 0,
                                    non_seasonal_differences = 1,
                                    non_seasonal_ma = 1,
@@ -112,9 +90,8 @@ model_fit_arima_bayes<- sarima_reg(non_seasonal_ar = 0,
   fit(value ~ date, data = training(splits))
 
 plot(model_fit_arima_bayes$fit$models$model_1)
-
-#-------------------------------------------------------------------------------  
-#Model 3: Random Walk (Naive) (Bayesmodels)
+  
+#Model 9: Random Walk (Naive) (Bayesmodels) from a Bayesian perspective with the package bayesmodels:
 
 model_fit_naive <- random_walk_reg(seasonal_random_walk = TRUE, seasonal_period = 12) %>%
   set_engine("stan") %>%
@@ -122,7 +99,7 @@ model_fit_naive <- random_walk_reg(seasonal_random_walk = TRUE, seasonal_period 
 
 plot(model_fit_naive$fit$models$model_1)
 
-#-------------------------------------------------------------------------------
+# Model 10: we prepared the data and train a MARS (Multivariate Adaptive Regression Splines) model using a structured workflow below:
 
 recipe_spec <- recipe(value ~ date, data = training(splits)) %>%
   step_date(date, features = "month", ordinal = FALSE) %>%
@@ -135,7 +112,8 @@ wflw_fit_mars <- workflow() %>%
   add_model(model_spec_mars) %>%
   fit(training(splits))
 
-## ---- paged.print = FALSE-----------------------------------------------------
+## putting all the models together
+
 models_tbl <- modeltime_table(
   model_fit_arima_no_boost,
   model_fit_arima_boosted,
@@ -147,16 +125,15 @@ models_tbl <- modeltime_table(
   model_fit_naive,
   wflw_fit_mars
 )
-
 models_tbl
 
-## ---- paged.print = FALSE-----------------------------------------------------
+## calibrate the models
+
 calibration_tbl <- models_tbl %>%
   modeltime_calibrate(new_data = testing(splits))
-
 calibration_tbl
 
-## -----------------------------------------------------------------------------
+
 #Accuracy Metrics
 
 calibration_tbl %>%
@@ -168,11 +145,9 @@ calibration_tbl %>%
 calibration_tbl %>%
   modeltime_accuracy() %>%
   table_modeltime_accuracy
-## -----------------------------------------------------------------------------
-#Step 5 - Testing Set Forecast & Accuracy Evaluation
-#There are 2 critical parts to an evaluation.
-#1.Visualizing the Forecast vs Test Data Set
-#2.Evaluating the Test (Out of Sample) Accuracy
+
+
+# Forecast & Accuracy Evaluation: 1.Visualizing the Forecast vs Test Data Set; 2.Evaluating the Test (Out of Sample) Accuracy
 
 calibration_tbl %>%
   modeltime_forecast(
@@ -192,7 +167,7 @@ calibration_tbl %>%
   plot_modeltime_forecast(
     .legend_max_width = 15, # For mobile screens
   )
-## ---- paged.print = F, message=F----------------------------------------------
+
 #Refit to Full Dataset & Forecast Forward
 
 refit_tbl <- calibration_tbl %>%
@@ -222,24 +197,24 @@ refit_tbl %>%
     #.interactive = interactive
   #)
 
--------------------------------------------------------------------------------
-# BEST MODEL FORECAST
+
+# BEST Single MODEL FORECAST
+
 # Bayesian ARIMA model
   
-## ---- paged.print = FALSE-----------------------------------------------------
 models_tbl1 <- modeltime_table(
   model_fit_arima_bayes
 )
 
 models_tbl1
 
-## ---- paged.print = FALSE-----------------------------------------------------
+## calibrate
 calibration_tbl1 <- models_tbl1 %>%
   modeltime_calibrate(new_data = testing(splits))
 
 calibration_tbl1
 
-## -----------------------------------------------------------------------------
+
 #Visualizing the Forecast vs Test Data Set
 
 calibration_tbl1 %>%
@@ -260,7 +235,7 @@ calibration_tbl1 %>%
   plot_modeltime_forecast(
     .legend_max_width = 15, # For mobile screens
   )
-## ---- paged.print = F, message=F----------------------------------------------
+
 #Refit to Full Dataset & Forecast Forward
 
 refit_tbl1 <- calibration_tbl1 %>%
@@ -282,6 +257,7 @@ refit_tbl1 %>%
 
 
 #################################################################################
+# HYBRID models
 
 library(readr)
 library(ggplot2)
@@ -336,7 +312,6 @@ library(bayesmodels)
 interactive <- FALSE
 
 # Load the data
-library(readxl)
 paym <- read_excel("Documents/df.xlsx")
 
 paym %>%
